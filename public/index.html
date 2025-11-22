@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Secure Chat</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js" defer></script>
+</head>
+<body>
+    <div id="login-screen">
+        <h2>Secure Chat Login</h2>
+        <input type="text" id="username" placeholder="Enter Username">
+        <button onclick="login()">Login</button>
+    </div>
+
+    <div id="chat-screen" style="display:none;">
+        <div id="header">Logged in as: <span id="my-name"></span></div>
+        <div id="main-area">
+            <div id="messages"></div>
+            <div id="controls">
+                <input type="text" id="recipient" placeholder="Recipient Username">
+                <input type="text" id="msg-input" placeholder="Message">
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
