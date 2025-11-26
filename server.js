@@ -13,7 +13,7 @@ const KEY_FILE = 'system_keys.json';
 const DB_CONFIG = {
     host: 'localhost',
     user: 'root',
-    password: '123456',
+    password: '123456', // Ensure this matches your local WAMP config
     database: 'secure_chat'
 };
 
@@ -46,7 +46,7 @@ async function importKey(jwk, type, isPrivate = false) {
         algo = { name: 'ECDSA', namedCurve: 'P-384' };
         usage = isPrivate ? ['sign'] : ['verify'];
     } 
-    // Removed HKDF block because we strictly use HMAC for state keys now
+    // Corrected: Removed incorrect HKDF block
 
     return await subtle.importKey(format, jwk, algo, true, usage);
 }
@@ -117,7 +117,6 @@ async function serializeState(state) {
 async function deserializeState(jsonStr) {
     const state = JSON.parse(jsonStr);
     
-    // FIX: Reverted RK back to 'HMAC'. This was the cause of the SyntaxError.
     if (state.RK) state.RK = await importKey(state.RK, 'HMAC'); 
     if (state.CKs) state.CKs = await importKey(state.CKs, 'HMAC');
     if (state.CKr) state.CKr = await importKey(state.CKr, 'HMAC');
@@ -182,27 +181,15 @@ io.on('connection', (socket) => {
         socket.join(username);
         socket.emit('login_success', username);
         
-        // SEND HISTORY
+        // SEND HISTORY (Modified: No plaintext check)
         const [msgs] = await db.execute('SELECT * FROM messages WHERE receiver = ? OR sender = ? ORDER BY id ASC', [username, username]);
         
         const history = msgs.map(m => {
-            let displayText;
-            let isDecrypted = false;
-
-            // If plaintext exists in DB (previously decrypted or sent by me), use it
-            if (m.plaintext) {
-                displayText = m.plaintext;
-                isDecrypted = true;
-            } else {
-                displayText = m.sender === currentUser ? "Message Sent (Encrypted)" : "Encrypted Message Received";
-                isDecrypted = false;
-            }
-            
             return {
                 id: m.id,
                 sender: m.sender,
-                text: displayText,
-                isDecrypted: isDecrypted
+                text: m.sender === currentUser ? "Message Sent (Encrypted)" : "Encrypted Message Received",
+                isDecrypted: false // Always false initially from DB
             };
         });
 
@@ -244,9 +231,9 @@ io.on('connection', (socket) => {
             const ctHex = Buffer.from(ciphertext).toString('hex');
             const ivHex = Buffer.from(header.receiverIV).toString('hex');
             
-            // Store plaintext for SENDER immediately
-            const [result] = await db.execute('INSERT INTO messages (sender, receiver, header_json, ciphertext_hex, iv_hex, plaintext) VALUES (?, ?, ?, ?, ?, ?)',
-                [currentUser, to, headerJson, ctHex, ivHex, text]);
+            // Modified: Removed 'plaintext' column insert
+            const [result] = await db.execute('INSERT INTO messages (sender, receiver, header_json, ciphertext_hex, iv_hex) VALUES (?, ?, ?, ?, ?)',
+                [currentUser, to, headerJson, ctHex, ivHex]);
 
             io.to(to).emit('new_msg', { 
                 id: result.insertId, 
@@ -255,7 +242,8 @@ io.on('connection', (socket) => {
                 isDecrypted: false
             });
             
-            socket.emit('msg_sent', { to, text });
+            // 2. Notify Sender (NEW: Send back ID so we can cache the plaintext locally)
+            socket.emit('msg_sent_confirm', { id: result.insertId, text: text });
 
         } catch (e) {
             console.error(e);
@@ -274,10 +262,7 @@ io.on('connection', (socket) => {
             if (rows.length === 0) return;
             const msg = rows[0];
 
-            if (msg.plaintext) {
-                 socket.emit('decrypted_msg', { id: msgId, text: msg.plaintext });
-                 return;
-            }
+            // Note: No plaintext check here anymore
 
              if(!client.conns[msg.sender]) {
                  const [uRows] = await db.execute('SELECT certificate_json FROM users WHERE username = ?', [msg.sender]);
@@ -302,7 +287,8 @@ io.on('connection', (socket) => {
 
             const plaintext = await client.receiveMessage(msg.sender, [header, ciphertext]);
 
-            await db.execute('UPDATE messages SET plaintext = ? WHERE id = ?', [plaintext, msgId]);
+            // Modified: Do NOT update DB with plaintext
+            // await db.execute('UPDATE messages SET plaintext = ? WHERE id = ?', [plaintext, msgId]);
 
             const newStateJson = await serializeState(client.conns[msg.sender]);
             await db.execute(`INSERT INTO conversations (user_from, user_to, state_json) 
